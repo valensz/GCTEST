@@ -100,82 +100,6 @@ class SoundEngine {
 const sounds = new SoundEngine();
 let questionsDb = [];
 let currentGame = null;
-const referenceImageCache = new Map();
-
-function encodeImagePath(url) {
-    return url.split('/').map(part => encodeURIComponent(part)).join('/');
-}
-
-async function imageUrlExists(url) {
-    return new Promise(resolve => {
-        const img = new Image();
-        img.onload = () => resolve(true);
-        img.onerror = () => resolve(false);
-        img.src = url;
-    });
-}
-
-async function resolveReferenceImageUrl(questionId) {
-    if (referenceImageCache.has(questionId)) {
-        return referenceImageCache.get(questionId);
-    }
-
-    const numericId = Number(questionId);
-    const extensions = ['png', 'jpg', 'jpeg', 'webp'];
-    const candidates = [];
-
-    // Special exception for question 98
-    if (numericId === 98) {
-        candidates.push('Images/98 Reesponse D');
-    }
-
-    candidates.push(`Images/Question #${numericId}`);
-    candidates.push(`Images/Question ${numericId}`);
-    candidates.push(`Images/Question${numericId}`);
-    candidates.push(`Images/Question-${numericId}`);
-    candidates.push(`Images/Question_${numericId}`);
-    candidates.push(`Images/${numericId}`);
-
-    for (const base of candidates) {
-        for (const ext of extensions) {
-            const url = `${base}.${ext}`;
-            const encodedUrl = encodeImagePath(url);
-            if (await imageUrlExists(encodedUrl)) {
-                referenceImageCache.set(questionId, encodedUrl);
-                return encodedUrl;
-            }
-        }
-    }
-
-    referenceImageCache.set(questionId, null);
-    return null;
-}
-
-// Virtual Competitors Configuration
-const BOTS = [
-    { name: 'CloudGuru', accuracy: 0.85, speedMin: 3, speedMax: 12, score: 0 },
-    { name: 'K8sMaster', accuracy: 0.78, speedMin: 5, speedMax: 18, score: 0 },
-    { name: 'IAMBoss', accuracy: 0.60, speedMin: 8, speedMax: 26, score: 0 },
-    { name: 'BigQueryWiz', accuracy: 0.82, speedMin: 10, speedMax: 28, score: 0 }
-];
-
-// Helper to Clean OCR artifacts
-function cleanOcrText(str) {
-    if (!str) return '';
-    return str
-        .replace(/ג€/g, '"')     // OCR Hebrew smart quotes
-        .replace(/ג€œ/g, '"')    // OCR quote open
-        .replace(/ג€\?/g, '"')   // OCR quote mark
-        .replace(/ג€/g, '"')
-        .replace(/`"/g, '"')
-        .replace(/“/g, '"')
-        .replace(/”/g, '"')
-        .replace(/’/g, "'")
-        .replace(/‘/g, "'")
-        .replace(/`'/g, "'")
-        .replace(/\s+/g, ' ')    // Standardize spacing
-        .trim();
-}
 
 // Helper to identify code blocks (YAML, SQL, CLI commands) and wrap them
 function formatQuestionText(text) {
@@ -263,144 +187,6 @@ function getQuestionTopic(questionText) {
     return 'General Cloud Engineering';
 }
 
-// PDF Parser function
-async function parsePdfContent(arrayBuffer, onProgress) {
-    // Load PDF using pdf.js
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    const numPages = pdf.numPages;
-    let fullText = '';
-    
-    for (let i = 1; i <= numPages; i++) {
-        const page = await pdf.getPage(i);
-        const textContent = await page.getTextContent();
-        
-        let lastY = null;
-        let pageText = '';
-        
-        for (const item of textContent.items) {
-            const currentY = item.transform[5];
-            
-            // Reconstruct layout: if vertical coordinate changes, add a newline
-            if (lastY !== null && Math.abs(currentY - lastY) > 8) {
-                pageText += '\n';
-            }
-            pageText += item.str + ' ';
-            lastY = currentY;
-        }
-        
-        fullText += `\n\n--- PAGE ${i} ---\n\n` + pageText;
-        if (onProgress) onProgress(i, numPages, fullText);
-    }
-    
-    // Parse the full text structurally
-    const parts = fullText.split(/Question\s+#/i);
-    const parsedQuestions = [];
-    
-    for (let i = 1; i < parts.length; i++) {
-        const part = parts[i].trim();
-        if (!part) continue;
-        
-        try {
-            // Get Question ID
-            const numMatch = part.match(/^(\d+)/);
-            if (!numMatch) continue;
-            const qId = parseInt(numMatch[1]);
-            
-            // Find "Correct Answer:" delimiter
-            const ansIndex = part.search(/Correct\s+Answer\s*:/i);
-            if (ansIndex === -1) continue;
-            
-            const bodyAndOptions = part.substring(0, ansIndex).trim();
-            const answerAndVotes = part.substring(ansIndex).trim();
-            
-            // Extract answer letters (e.g. C, BE, etc.)
-            let correctAnswer = '';
-            const ansMatch = answerAndVotes.match(/Correct\s+Answer\s*:\s*([A-E]+)/i);
-            if (ansMatch) {
-                correctAnswer = ansMatch[1].trim().toUpperCase();
-            } else {
-                continue; // Can't play without correct answer
-            }
-            
-            // Extract option content. Options are preceded by whitespace/newlines
-            const optARegex = /[\r\n\s]+A\.\s+/;
-            const optBRegex = /[\r\n\s]+B\.\s+/;
-            const optCRegex = /[\r\n\s]+C\.\s+/;
-            const optDRegex = /[\r\n\s]+D\.\s+/;
-            const optERegex = /[\r\n\s]+E\.\s+/;
-            
-            const idxA = bodyAndOptions.search(optARegex);
-            const idxB = bodyAndOptions.search(optBRegex);
-            const idxC = bodyAndOptions.search(optCRegex);
-            const idxD = bodyAndOptions.search(optDRegex);
-            const idxE = bodyAndOptions.search(optERegex);
-            
-            if (idxA === -1 || idxB === -1 || idxC === -1 || idxD === -1) {
-                continue; // Skip malformed questions
-            }
-            
-            // Question body is text before option A
-            let questionText = bodyAndOptions.substring(0, idxA).trim();
-            // Remove Topic metadata line if present
-            const lines = questionText.split('\n');
-            if (lines.length > 0 && lines[0].toLowerCase().includes('topic')) {
-                lines.shift();
-            }
-            questionText = lines.join('\n').trim();
-            
-            // Slice option strings
-            let optA = '', optB = '', optC = '', optD = '', optE = '';
-            optA = bodyAndOptions.substring(idxA, idxB).replace(/^[\r\n\s]*A\.\s+/, '').trim();
-            optB = bodyAndOptions.substring(idxB, idxC).replace(/^[\r\n\s]*B\.\s+/, '').trim();
-            
-            if (idxE !== -1) {
-                optC = bodyAndOptions.substring(idxC, idxD).replace(/^[\r\n\s]*C\.\s+/, '').trim();
-                optD = bodyAndOptions.substring(idxD, idxE).replace(/^[\r\n\s]*D\.\s+/, '').trim();
-                optE = bodyAndOptions.substring(idxE).replace(/^[\r\n\s]*E\.\s+/, '').trim();
-            } else {
-                optC = bodyAndOptions.substring(idxC, idxD).replace(/^[\r\n\s]*C\.\s+/, '').trim();
-                optD = bodyAndOptions.substring(idxD).replace(/^[\r\n\s]*D\.\s+/, '').trim();
-            }
-            
-            // Ingest community vote distribution
-            let votes = {};
-            const voteIndex = answerAndVotes.search(/Community\s+vote\s+distribution/i);
-            if (voteIndex !== -1) {
-                const voteStr = answerAndVotes.substring(voteIndex).trim();
-                const matches = voteStr.matchAll(/([A-E])\s*\((\d+)%\)/gi);
-                for (const match of matches) {
-                    votes[match[1].toUpperCase()] = parseInt(match[2]);
-                }
-            }
-            
-            // Clean up options
-            optA = cleanOcrText(optA);
-            optB = cleanOcrText(optB);
-            optC = cleanOcrText(optC);
-            optD = cleanOcrText(optD);
-            if (optE) optE = cleanOcrText(optE);
-            
-            parsedQuestions.push({
-                id: qId,
-                question: questionText,
-                options: {
-                    A: optA,
-                    B: optB,
-                    C: optC,
-                    D: optD,
-                    ...(optE ? { E: optE } : {})
-                },
-                answer: correctAnswer,
-                votes: votes
-            });
-        } catch (e) {
-            console.error(`Error parsing index ${i}:`, e);
-        }
-    }
-    
-    return parsedQuestions;
-}
-
 // Game State Class
 class QuizGame {
     constructor(questions, mode, count, timeLimit) {
@@ -417,20 +203,16 @@ class QuizGame {
         
         // Game progression
         this.currentIndex = 0;
-        this.score = 0;
         this.accuracyCount = 0;
         this.lifelineUsed = false;
         this.answerProcessed = false; // Track if answer has been processed for current question
+        this.selectionRule = { isMultiple: false, required: 1 }; // Set per question in UI.renderQuestion
         
         // Endless Mode specific
         this.lives = 3;
         
         // Mock Exam specific (doesn't give feedback until end)
         this.answersLog = []; // { qIndex, question, selected, correct, isCorrect }
-        
-        // Competitors Setup
-        this.bots = JSON.parse(JSON.stringify(BOTS)); // Deep clone
-        this.leaderboard = [];
         
         // Timer references
         this.timerInterval = null;
@@ -478,15 +260,6 @@ class QuizGame {
         return this.timeStart ? (Date.now() - this.timeStart) / 1000 : 0;
     }
     
-    // Simulate bot answers for this question
-    simulateBots(currentQuestion) {
-        this.bots.forEach(bot => {
-            const isCorrect = Math.random() < bot.accuracy;
-            bot.lastPoints = 0;
-            bot.lastCorrect = isCorrect;
-        });
-    }
-    
     processUserAnswer(selectedOption) {
         if (this.answerProcessed) return null; // Already processed, ignore
 
@@ -506,14 +279,11 @@ class QuizGame {
         // Correct only if sets match exactly (order-insensitive)
         const isCorrect = selectedLetters.length > 0 && selectedLetters.length === correctLetters.length &&
             correctLetters.every(c => selectedLetters.includes(c));
-        let userPoints = 0;
-        
+
         if (isCorrect) {
             this.accuracyCount++;
-        } else {
-            if (this.mode === 'endless') {
-                this.lives--;
-            }
+        } else if (this.mode === 'endless') {
+            this.lives--;
         }
         
         const selectedAnswerText = selectedLetters.length > 0
@@ -536,22 +306,8 @@ class QuizGame {
             category: questionCategory
         });
         
-        // Simulate bots
-        this.simulateBots(q);
-        
-        // Build leaderboard standing array
-        const standings = [
-            { name: 'YOU', score: this.score, lastPoints: userPoints, isUser: true, lastCorrect: isCorrect },
-            ...this.bots.map(b => ({ name: b.name, score: b.score, lastPoints: b.lastPoints, isUser: false, lastCorrect: b.lastCorrect }))
-        ];
-        
-        // Sort standings descending
-        standings.sort((a, b) => b.score - a.score);
-        this.leaderboard = standings;
-        
         return {
             isCorrect,
-            userPoints,
             correctAnswer: q.answer,
             timeLeft: this.timeLeft
         };
@@ -573,7 +329,6 @@ const UI = {
         history: document.getElementById('history-screen'),
         historyDetail: document.getElementById('history-detail-screen'),
         game: document.getElementById('game-screen'),
-        leaderboard: document.getElementById('leaderboard-screen'),
         gameOver: document.getElementById('game-over-screen')
     },
 
@@ -728,13 +483,8 @@ const UI = {
         this.showScreen('historyDetail');
     },
 
-    exportHistoryEntryPdf(entryId) {
-        const entry = entryId ? this.getHistory().find(item => item.id.toString() === entryId.toString()) : this.currentHistoryEntry;
-        if (!entry) {
-            alert('No session report selected to export.');
-            return;
-        }
-
+    // Dibuja el reporte de una sesión. Lo usan el historial y la pantalla final.
+    buildSessionReportPdf(entry, filenamePrefix) {
         const { jsPDF } = window.jspdf || {};
         if (!jsPDF) {
             alert('PDF export library is not loaded.');
@@ -781,10 +531,8 @@ const UI = {
                 doc.text(`Q${m.qIndex} — ${m.category}`, margin, y);
                 y += 14;
                 doc.setFont(undefined, 'normal');
-                const answerText = `Your Answer: ${m.selectedText}`;
-                const correctText = `Correct Answer: ${m.correctText}`;
-                const wrappedAnswer = doc.splitTextToSize(answerText, 510);
-                const wrappedCorrect = doc.splitTextToSize(correctText, 510);
+                const wrappedAnswer = doc.splitTextToSize(`Your Answer: ${m.selectedText}`, 510);
+                const wrappedCorrect = doc.splitTextToSize(`Correct Answer: ${m.correctText}`, 510);
                 doc.text(wrappedAnswer, margin, y);
                 y += wrappedAnswer.length * 14;
                 doc.text(wrappedCorrect, margin, y);
@@ -792,17 +540,19 @@ const UI = {
             });
         }
 
-        const safeFilename = `GCP_Quest_Report_${entry.date.replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
-        doc.save(safeFilename);
+        doc.save(`${filenamePrefix}${entry.date.replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`);
+    },
+
+    exportHistoryEntryPdf(entryId) {
+        const entry = entryId ? this.getHistory().find(item => item.id.toString() === entryId.toString()) : this.currentHistoryEntry;
+        if (!entry) {
+            alert('No session report selected to export.');
+            return;
+        }
+        this.buildSessionReportPdf(entry, 'GCP_Quest_Report_');
     },
 
     exportGameResultPdf() {
-        const { jsPDF } = window.jspdf || {};
-        if (!jsPDF) {
-            alert('PDF export library is not loaded.');
-            return;
-        }
-
         if (!currentGame) {
             alert('No completed game available for export.');
             return;
@@ -826,60 +576,7 @@ const UI = {
             topicBreakdown,
             mistakes: mistakes.map(m => ({ qIndex: m.qIndex, category: m.category, selectedText: m.selectedText, correctText: m.correctText }))
         };
-
-        const doc = new jsPDF({ unit: 'pt', format: 'letter' });
-        const margin = 40;
-        let y = 40;
-        doc.setFontSize(16);
-        doc.text('GCP Quest Session Report', margin, y);
-        y += 26;
-        doc.setFontSize(11);
-        doc.setFont(undefined, 'bold');
-        doc.text(`${entry.date} — ${entry.mode.toUpperCase()} — ${entry.accuracy}%`, margin, y);
-        y += 18;
-        doc.setFont(undefined, 'normal');
-        doc.text(`Answered: ${entry.totalAnswered}, Correct: ${entry.correctCount}, Mistakes: ${entry.mistakesCount}`, margin, y);
-        y += 18;
-
-        const topicLines = Object.entries(entry.topicBreakdown || {})
-            .sort((a, b) => b[1] - a[1])
-            .map(([topic, count]) => `${topic}: ${count} ${count === 1 ? 'mistake' : 'mistakes'}`);
-        doc.text('Improvement topics:', margin, y);
-        y += 16;
-        if (topicLines.length) {
-            topicLines.forEach(line => {
-                const wrapped = doc.splitTextToSize(line, 510);
-                doc.text(wrapped, margin, y);
-                y += wrapped.length * 14;
-            });
-        } else {
-            doc.text('None', margin, y);
-            y += 16;
-        }
-
-        if (entry.mistakes && entry.mistakes.length) {
-            y += 6;
-            doc.text('Mistakes Review:', margin, y);
-            y += 16;
-            entry.mistakes.forEach(m => {
-                if (y > 720) { doc.addPage(); y = 40; }
-                doc.setFont(undefined, 'bold');
-                doc.text(`Q${m.qIndex} — ${m.category}`, margin, y);
-                y += 14;
-                doc.setFont(undefined, 'normal');
-                const answerText = `Your Answer: ${m.selectedText}`;
-                const correctText = `Correct Answer: ${m.correctText}`;
-                const wrappedAnswer = doc.splitTextToSize(answerText, 510);
-                const wrappedCorrect = doc.splitTextToSize(correctText, 510);
-                doc.text(wrappedAnswer, margin, y);
-                y += wrappedAnswer.length * 14;
-                doc.text(wrappedCorrect, margin, y);
-                y += wrappedCorrect.length * 14 + 8;
-            });
-        }
-
-        const safeFilename = `GCP_Quest_Session_Report_${entry.date.replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
-        doc.save(safeFilename);
+        this.buildSessionReportPdf(entry, 'GCP_Quest_Session_Report_');
     },
 
     exportHistoryPdf() {
@@ -970,7 +667,7 @@ const UI = {
         // 1. If questions are already cached in localStorage, use them instantly
         const cached = localStorage.getItem('gcp_questions_db');
         if (cached) {
-            questionsDb = JSON.parse(cached);
+            questionsDb = sanitizeQuestions(JSON.parse(cached));
             uploadZone.style.display = 'none';
             readyZone.style.display  = 'block';
             document.getElementById('db-question-count').textContent =
@@ -1011,9 +708,9 @@ const UI = {
                 return;
             }
 
-            localStorage.setItem('gcp_questions_db', JSON.stringify(questions));
+            questionsDb = sanitizeQuestions(questions);
+            localStorage.setItem('gcp_questions_db', JSON.stringify(questionsDb));
             localStorage.setItem('gcp_db_source', 'kahoot.pdf');
-            questionsDb = questions;
 
             uploadZone.style.display = 'none';
             readyZone.style.display  = 'block';
@@ -1082,27 +779,10 @@ const UI = {
         const shapes = ['triangle', 'diamond', 'circle', 'square', 'circle']; // fallback shape
         const colorClasses = ['option-a', 'option-b', 'option-c', 'option-d', 'option-a'];
         
-        // Detect multiple-response prompts like "choose two", "select two", "choose 3"
-        q.isMultiple = false;
-        q.requiredSelections = 1;
-        try {
-            const txt = (q.question || '').toLowerCase();
-            const chooseMatch = txt.match(/\b(?:choose|select)\s+(one|two|three|four|five|both|\d+)\b/);
-            const allApplyMatch = /select all that apply/.test(txt) || /choose all that apply/.test(txt);
-
-            if (chooseMatch) {
-                const map = { one:1, two:2, three:3, four:4, five:5, both:2 };
-                const val = chooseMatch[1];
-                q.requiredSelections = map[val] || parseInt(val) || 1;
-                q.isMultiple = q.requiredSelections > 1;
-            } else if (allApplyMatch) {
-                q.isMultiple = true;
-                q.requiredSelections = Object.keys(q.options).length;
-            }
-        } catch (e) { /* ignore parsing errors */ }
-
+        // Multiple-response prompts ("choose two", "select all that apply") need several selections
         const letters = Object.keys(q.options).sort(); // A, B, C, D, E
-        q.requiredSelections = Math.max(1, Math.min(q.requiredSelections, letters.length));
+        const rule = getSelectionRule(q.question, letters.length);
+        currentGame.selectionRule = rule;
         const multiSelections = new Set();
 
         letters.forEach((letter, i) => {
@@ -1126,7 +806,7 @@ const UI = {
             btn.appendChild(textSpan);
 
             // Add click listener
-            if (q.isMultiple) {
+            if (rule.isMultiple) {
                 btn.addEventListener('click', () => {
                     // Toggle selection
                     if (multiSelections.has(letter)) {
@@ -1134,13 +814,13 @@ const UI = {
                         btn.classList.remove('multi-selected');
                     } else {
                         // Prevent selecting more than required
-                        if (multiSelections.size >= q.requiredSelections) return;
+                        if (multiSelections.size >= rule.required) return;
                         multiSelections.add(letter);
                         btn.classList.add('multi-selected');
                     }
 
                     // Enable Next only when we've selected the required number
-                    if (nextBtn) nextBtn.disabled = (multiSelections.size !== q.requiredSelections);
+                    if (nextBtn) nextBtn.disabled = (multiSelections.size !== rule.required);
                 });
             } else {
                 btn.addEventListener('click', () => this.handleAnswerSelect(letter));
@@ -1149,12 +829,8 @@ const UI = {
             grid.appendChild(btn);
         });
         
-        // Adjust grid layout based on option count (e.g. support 5 options gracefully)
-        if (letters.length > 4) {
-            grid.style.gridTemplateColumns = '1fr';
-        } else {
-            grid.style.gridTemplateColumns = window.innerWidth <= 768 ? '1fr' : '1fr 1fr';
-        }
+        // Five options (A–E) switch to one column; the layout itself lives in styles.css
+        grid.classList.toggle('single-column', letters.length > 4);
         
         // Check Lifeline availability
         lifelineBtn.style.display = (currentGame.mode === 'exam') ? 'none' : 'block';
@@ -1226,87 +902,51 @@ const UI = {
         }, 220);
     },
     
-    // User clicks an option
+    // User clicks an option (or submits a multi-select answer as a string such as "BE")
     handleAnswerSelect(selectedOption) {
         if (currentGame.timeLimit > 0) {
             clearInterval(currentGame.timerInterval);
         }
-        
-        // Disable option buttons
+
         const buttons = document.querySelectorAll('.answer-card');
         buttons.forEach(btn => btn.disabled = true);
-        
+
         const result = currentGame.processUserAnswer(selectedOption);
-        
-        // Audio cues & highlighting
-        if (currentGame.mode === 'exam') {
-            // Mock Exam mode: reveal correct/incorrect similar to other modes,
-            // but do not show the full leaderboard screen — allow user to proceed.
-            if (result.isCorrect) {
-                sounds.playCorrect();
-                document.getElementById('feedback-overlay').className = 'feedback-overlay active correct';
-                document.getElementById('feedback-icon').className = 'fa-solid fa-circle-check';
-                document.getElementById('feedback-message').textContent = 'Correct!';
-            } else {
-                sounds.playIncorrect();
-                document.getElementById('feedback-overlay').className = 'feedback-overlay active incorrect';
-                document.getElementById('feedback-icon').className = 'fa-solid fa-circle-xmark';
-                document.getElementById('feedback-message').textContent = 'Incorrect!';
-            }
+        const overlay = document.getElementById('feedback-overlay');
 
-            // Highlight options: correct in green, user's wrong selections in red
-            buttons.forEach(btn => {
-                const opt = btn.dataset.option;
-                if (result.correctAnswer.includes(opt)) {
-                    btn.classList.add('correct-answer-highlight');
-                } else if (String(selectedOption).toUpperCase().includes(opt)) {
-                    btn.classList.add('wrong-answer-highlight');
-                } else {
-                    btn.classList.add('fade-out');
-                }
-            });
-
-            document.getElementById('correct-answer-letter').textContent = result.correctAnswer;
-
-            // Enable Next button so the user can continue at their own pace
-            const nextBtnExam = document.getElementById('next-question-btn');
-            if (nextBtnExam) nextBtnExam.disabled = false;
+        // Same feedback in every mode; Mock Exam only differs in that it waits for "Next" (no auto-advance)
+        if (result.isCorrect) {
+            sounds.playCorrect();
+            overlay.className = 'feedback-overlay active correct';
+            document.getElementById('feedback-icon').className = 'fa-solid fa-circle-check';
+            document.getElementById('feedback-message').textContent = 'Correct!';
         } else {
-            // Standard/Endless modes: reveal correctness instantly
-            if (result.isCorrect) {
-                sounds.playCorrect();
-                document.getElementById('feedback-overlay').className = 'feedback-overlay active correct';
-                document.getElementById('feedback-icon').className = 'fa-solid fa-circle-check';
-                document.getElementById('feedback-message').textContent = 'Correct!';
-            } else {
-                sounds.playIncorrect();
-                document.getElementById('feedback-overlay').className = 'feedback-overlay active incorrect';
-                document.getElementById('feedback-icon').className = 'fa-solid fa-circle-xmark';
-                document.getElementById('feedback-message').textContent = 'Incorrect!';
-            }
-            
-            // Highlight options
-            buttons.forEach(btn => {
-                const opt = btn.dataset.option;
-                if (result.correctAnswer.includes(opt)) {
-                    btn.classList.add('correct-answer-highlight');
-                } else if (String(selectedOption).toUpperCase().includes(opt)) {
-                    btn.classList.add('wrong-answer-highlight');
-                } else {
-                    btn.classList.add('fade-out');
-                }
-            });
-            
-            document.getElementById('correct-answer-letter').textContent = result.correctAnswer;
-            
-            // Hide Lifeline display chart on overlay unless it was triggered
-            document.getElementById('hint-vote-chart-container').style.display = 'none';
-            // Enable "Next" only after an answer was processed
-            const nextBtn = document.getElementById('next-question-btn');
-            if (nextBtn) nextBtn.disabled = false;
+            sounds.playIncorrect();
+            overlay.className = 'feedback-overlay active incorrect';
+            document.getElementById('feedback-icon').className = 'fa-solid fa-circle-xmark';
+            document.getElementById('feedback-message').textContent = 'Incorrect!';
         }
+
+        // Correct options in green, the user's wrong selections in red, the rest faded
+        const selectedLetters = String(selectedOption).toUpperCase();
+        buttons.forEach(btn => {
+            const opt = btn.dataset.option;
+            if (result.correctAnswer.includes(opt)) {
+                btn.classList.add('correct-answer-highlight');
+            } else if (selectedLetters.includes(opt)) {
+                btn.classList.add('wrong-answer-highlight');
+            } else {
+                btn.classList.add('fade-out');
+            }
+        });
+
+        document.getElementById('correct-answer-letter').textContent = result.correctAnswer;
+        document.getElementById('hint-vote-chart-container').style.display = 'none';
+
+        // Enable "Next" only after an answer was processed
+        document.getElementById('next-question-btn').disabled = false;
     },
-    
+
     // Timer fires 0
     handleTimeUp() {
         const buttons = document.querySelectorAll('.answer-card');
@@ -1428,7 +1068,7 @@ const UI = {
         if (nextBtn) nextBtn.disabled = true;
     },
     
-    // Advances to leaderboard standings or game over screen
+    // Advances to the next question or to the game over screen
     advanceGame() {
         const hasNext = currentGame.nextQuestion();
         if (hasNext) {
@@ -1437,59 +1077,6 @@ const UI = {
         } else {
             this.endGame();
         }
-    },
-    
-    // Show intermediate leaderboard standings
-    renderLeaderboard() {
-        this.showScreen('leaderboard');
-        
-        const list = document.getElementById('leaderboard-list');
-        list.innerHTML = '';
-        
-        currentGame.leaderboard.forEach((player, i) => {
-            const row = document.createElement('div');
-            row.className = `leaderboard-row ${player.isUser ? 'player-user' : ''}`;
-            
-            const rankName = document.createElement('div');
-            rankName.className = 'rank-name';
-            
-            const rankNum = document.createElement('span');
-            rankNum.className = 'rank-num';
-            rankNum.textContent = i + 1;
-            
-            const name = document.createElement('span');
-            name.className = 'player-name';
-            name.textContent = player.name;
-            
-            rankName.appendChild(rankNum);
-            rankName.appendChild(name);
-            
-            const scoreStat = document.createElement('div');
-            scoreStat.className = 'score-stat';
-            
-            const val = document.createElement('span');
-            val.className = 'score-val';
-            val.textContent = player.score.toLocaleString();
-            
-            const change = document.createElement('span');
-            change.className = 'score-change';
-            
-            if (player.lastPoints > 0) {
-                change.textContent = `+${player.lastPoints.toLocaleString()}`;
-                change.style.color = 'var(--success)';
-            } else if (player.lastCorrect === false && player.isUser) {
-                change.textContent = 'Wrong';
-                change.style.color = 'var(--error)';
-            } else {
-                change.textContent = '';
-            }
-            
-            scoreStat.appendChild(val);
-            scoreStat.appendChild(change);
-            row.appendChild(rankName);
-            row.appendChild(scoreStat);
-            list.appendChild(row);
-        });
     },
     
     // Game over screen setup
@@ -1515,9 +1102,6 @@ const UI = {
         mistakes.forEach(m => {
             topicBreakdown[m.category] = (topicBreakdown[m.category] || 0) + 1;
         });
-
-        const topCategory = Object.keys(topicBreakdown).length ?
-            Object.entries(topicBreakdown).sort((a,b) => b[1] - a[1])[0][0] : '—';
 
         // Build improvement summary lines (each category on its own line)
         const improvementLines = Object.entries(topicBreakdown).length ?
@@ -1557,8 +1141,6 @@ const UI = {
                 reviewList.appendChild(item);
             });
 
-            // No separate top-category block anymore; results grid shows the improvement summary text.
-
             if (currentGame.mode === 'exam') {
                 const analysisHeader = document.createElement('div');
                 analysisHeader.className = 'topic-analysis-banner';
@@ -1576,7 +1158,6 @@ const UI = {
             }
         } else {
             reviewContainer.style.display = 'none';
-            // ensure nothing attempts to reference the removed top-category element
         }
     }
 };
@@ -1590,52 +1171,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 2. Auto-load the bundled default PDF (or use localStorage cache)
     await UI.autoLoadDefaultPdf();
 
-    // ── Shared PDF parse helper (used by auto-load fallback & manual upload) ──
-    async function handlePdfFile(file) {
-        UI.showScreen('parse');
-        const fill        = document.getElementById('parse-progress-fill');
-        const pageStatus  = document.getElementById('parse-page-status');
-        const countStatus = document.getElementById('parse-count-status');
-
-        try {
-            const arrayBuffer = await file.arrayBuffer();
-            const questions   = await parsePdfContent(arrayBuffer, (page, total, currentText) => {
-                const pct = Math.round((page / total) * 100);
-                fill.style.width        = `${pct}%`;
-                pageStatus.textContent  = `Processing Page ${page}/${total}...`;
-                const matches = currentText.match(/Question\s+#/gi);
-                countStatus.textContent = `${matches ? matches.length : 0} Questions extracted`;
-            });
-
-            if (questions.length === 0) {
-                alert('No questions could be extracted. Please check the PDF format.');
-                UI.showScreen('lobby');
-                return;
-            }
-
-            localStorage.setItem('gcp_questions_db', JSON.stringify(questions));
-            localStorage.setItem('gcp_db_source', file.name);
-            questionsDb = questions;
-
-            // Refresh the db-ready section
-            const uploadZone = document.getElementById('pdf-upload-section');
-            const readyZone  = document.getElementById('database-ready-section');
-            uploadZone.style.display = 'none';
-            readyZone.style.display  = 'block';
-            document.getElementById('db-question-count').textContent =
-                `Database Ready: ${questions.length} Questions Loaded`;
-            document.getElementById('db-source-name').textContent = file.name;
-
-            UI.showScreen('lobby');
-        } catch (err) {
-            console.error('PDF parsing error', err);
-            alert('Failed to read PDF file: ' + err.message);
-            UI.showScreen('lobby');
-        }
-    }
-
-
-    
     // 4. Game Config Mode buttons selection
     const modeBtns = document.querySelectorAll('.mode-btn');
     modeBtns.forEach(btn => {
@@ -1656,26 +1191,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     });
     
-    // 5. Game Start Quest trigger
-    document.getElementById('start-game-btn').addEventListener('click', () => {
+    // Starts a game with the lobby settings (also used by "Play again")
+    function startNewGame() {
         if (questionsDb.length === 0) return;
-        
+
         // Resume Audio context on user gesture
         sounds.init();
-        
-        const activeModeBtn = document.querySelector('.mode-btn.active');
-        const mode = activeModeBtn.dataset.mode;
+
+        const mode = document.querySelector('.mode-btn.active').dataset.mode;
         const timeLimit = document.getElementById('timer-select').value;
-        
+
         let count = document.getElementById('question-count-select').value;
         if (mode === 'exam') count = '50';
         if (mode === 'endless') count = 'all';
-        
+
         currentGame = new QuizGame(questionsDb, mode, count, timeLimit);
-        
         UI.showScreen('game');
         UI.renderQuestion();
-    });
+    }
+
+    document.getElementById('start-game-btn').addEventListener('click', startNewGame);
 
     const testQuestionsBtn = document.getElementById('go-to-question-runner-btn');
     if (testQuestionsBtn) {
@@ -1736,9 +1271,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 6. Next Question click overlay actions
     document.getElementById('next-question-btn').addEventListener('click', () => {
         if (!currentGame) return;
-        const q = currentGame.getCurrentQuestion();
-        // If this is a multi-select question and answer not yet processed, submit selected options
-        if (q && q.isMultiple && !currentGame.answerProcessed) {
+        // Multi-select: the answer is submitted from "Next" once the required count is selected
+        if (currentGame.selectionRule.isMultiple && !currentGame.answerProcessed) {
             const selectedBtns = Array.from(document.querySelectorAll('.answer-card.multi-selected'));
             const letters = selectedBtns.map(b => b.dataset.option).join('');
             if (!letters) return; // nothing selected yet
@@ -1751,37 +1285,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         UI.advanceGame();
     });
     
-    // 7. Leaderboard screen continuation trigger
-    document.getElementById('leaderboard-next-btn').addEventListener('click', () => {
-        const hasNext = currentGame.nextQuestion();
-        if (hasNext) {
-            UI.showScreen('game');
-            UI.renderQuestion();
-        } else {
-            UI.endGame();
-        }
-    });
-    
     // 8. Lifeline Hint button trigger
     document.getElementById('lifeline-btn').addEventListener('click', () => {
         UI.triggerLifeline();
     });
     
     // 9. Post game actions
-    document.getElementById('restart-game-btn').addEventListener('click', () => {
-        // Restart with same config
-        const activeModeBtn = document.querySelector('.mode-btn.active');
-        const mode = activeModeBtn.dataset.mode;
-        const timeLimit = document.getElementById('timer-select').value;
-        
-        let count = document.getElementById('question-count-select').value;
-        if (mode === 'exam') count = '50';
-        if (mode === 'endless') count = 'all';
-        
-        currentGame = new QuizGame(questionsDb, mode, count, timeLimit);
-        UI.showScreen('game');
-        UI.renderQuestion();
-    });
+    document.getElementById('restart-game-btn').addEventListener('click', startNewGame);
     
     document.getElementById('back-lobby-btn').addEventListener('click', () => {
         UI.showScreen('lobby');

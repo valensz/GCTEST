@@ -24,7 +24,7 @@
   </style>
 </head>
 <body class="theme-default">
-  <div class="admin-panel" id="admin-panel" style="display:block;">
+  <div class="admin-panel" id="admin-panel">
     <h1>Admin - Question DB Manager</h1>
     <div class="card">
       <h3>Upload PDF (used as question database)</h3>
@@ -51,7 +51,7 @@
       <div class="question-area" id="question-area" style="display:none;">
         <h4 id="q-title"></h4>
         <div id="multi-hint" class="status" style="margin-bottom:8px;display:none;"></div>
-        <div id="q-body"></div>
+        <div id="q-body" style="white-space: pre-wrap; line-height: 1.6;"></div>
         <button id="admin-image-reference-btn" class="btn btn-secondary" style="display:none; margin-top: 12px;">
           <i class="fa-solid fa-image"></i> Show Reference Image
         </button>
@@ -76,338 +76,208 @@
     <p style="margin-top:18px; font-size:0.9rem; color:var(--text-secondary)">Note: uploading a PDF will parse it client-side and store the parsed question DB in <strong>localStorage</strong> as `gcp_questions_db` and set `gcp_db_source` to the uploaded filename. The main app will use that cached DB.</p>
   </div>
 
-<script>
-// Copy of parsePdfContent from the app to extract questions (adapted)
-async function parsePdfContent(arrayBuffer, onProgress) {
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    const numPages = pdf.numPages;
-    let fullText = '';
-    for (let i = 1; i <= numPages; i++) {
-        const page = await pdf.getPage(i);
-        const textContent = await page.getTextContent();
-        let lastY = null;
-        let pageText = '';
-        for (const item of textContent.items) {
-            const currentY = item.transform[5];
-            if (lastY !== null && Math.abs(currentY - lastY) > 8) {
-                pageText += '\n';
-            }
-            pageText += item.str + ' ';
-            lastY = currentY;
-        }
-        fullText += `\n\n--- PAGE ${i} ---\n\n` + pageText;
-        if (onProgress) onProgress(i, numPages, fullText);
+  <script src="text-utils.js"></script>
+  <script src="pdf-parser.js"></script>
+  <script src="image-utils.js"></script>
+  <script>
+    // Question shown in the runner; "Check Answer" validates this one, not whatever number is typed
+    let currentQuestion = null;
+
+    // Returns the cached questions (sanitized) or null, and updates the summary line
+    function loadCached() {
+      const countEl = document.getElementById('cached-count');
+      const sourceEl = document.getElementById('cached-source');
+      let questions = null;
+      try {
+        const cached = localStorage.getItem('gcp_questions_db');
+        if (cached) questions = sanitizeQuestions(JSON.parse(cached));
+      } catch (e) {
+        questions = null;
+      }
+      countEl.textContent = questions ? String(questions.length) : '0';
+      sourceEl.textContent = questions ? (localStorage.getItem('gcp_db_source') || 'kahoot.pdf') : 'none';
+      return questions;
     }
 
-    const parts = fullText.split(/Question\s+#/i);
-    const parsedQuestions = [];
-    for (let i = 1; i < parts.length; i++) {
-        const part = parts[i].trim();
-        if (!part) continue;
-        try {
-            const numMatch = part.match(/^(\d+)/);
-            if (!numMatch) continue;
-            const qId = parseInt(numMatch[1]);
-            const ansIndex = part.search(/Correct\s+Answer\s*:/i);
-            if (ansIndex === -1) continue;
-            const bodyAndOptions = part.substring(0, ansIndex).trim();
-            const answerAndVotes = part.substring(ansIndex).trim();
-            let correctAnswer = '';
-            const ansMatch = answerAndVotes.match(/Correct\s+Answer\s*:\s*([A-E]+)/i);
-            if (ansMatch) correctAnswer = ansMatch[1].trim().toUpperCase(); else continue;
+    function renderQuestion(q) {
+      currentQuestion = q;
+      const imageBtn = document.getElementById('admin-image-reference-btn');
+      imageBtn.style.display = 'none';
+      imageBtn.disabled = true;
+      imageBtn.onclick = null;
 
-            const optARegex = /[\r\n\s]+A\.\s+/;
-            const optBRegex = /[\r\n\s]+B\.\s+/;
-            const optCRegex = /[\r\n\s]+C\.\s+/;
-            const optDRegex = /[\r\n\s]+D\.\s+/;
-            const optERegex = /[\r\n\s]+E\.\s+/;
-            const idxA = bodyAndOptions.search(optARegex);
-            const idxB = bodyAndOptions.search(optBRegex);
-            const idxC = bodyAndOptions.search(optCRegex);
-            const idxD = bodyAndOptions.search(optDRegex);
-            const idxE = bodyAndOptions.search(optERegex);
-            if (idxA === -1 || idxB === -1 || idxC === -1 || idxD === -1) continue;
-            let questionText = bodyAndOptions.substring(0, idxA).trim();
-            const lines = questionText.split('\n');
-            if (lines.length > 0 && lines[0].toLowerCase().includes('topic')) lines.shift();
-            questionText = lines.join('\n').trim();
-            // Extract options
-            const optA = bodyAndOptions.substring(idxA, idxB).replace(/^[\r\n\s]*A\.\s+/, '').trim();
-            const optB = bodyAndOptions.substring(idxB, idxC).replace(/^[\r\n\s]*B\.\s+/, '').trim();
-            const optC = bodyAndOptions.substring(idxC, idxD).replace(/^[\r\n\s]*C\.\s+/, '').trim();
-            const optD = (idxE === -1) ? bodyAndOptions.substring(idxD).replace(/^[\r\n\s]*D\.\s+/, '').trim() : bodyAndOptions.substring(idxD, idxE).replace(/^[\r\n\s]*D\.\s+/, '').trim();
-            const optE = (idxE === -1) ? null : bodyAndOptions.substring(idxE).replace(/^[\r\n\s]*E\.\s+/, '').trim();
+      document.getElementById('question-area').style.display = 'block';
+      document.getElementById('q-title').textContent = `Q#${q.id}`;
+      document.getElementById('q-body').textContent = q.question || '';
+      document.getElementById('check-result').textContent = '';
 
-            const options = { A: optA, B: optB, C: optC, D: optD };
-            if (optE) options.E = optE;
+      const letters = Object.keys(q.options).sort();
+      const rule = getSelectionRule(q.question, letters.length);
+      const hintEl = document.getElementById('multi-hint');
+      hintEl.textContent = rule.isMultiple ? `Select ${rule.required} option${rule.required > 1 ? 's' : ''}` : '';
+      hintEl.style.display = rule.isMultiple ? 'block' : 'none';
 
-            parsedQuestions.push({ id: qId, question: questionText, options, answer: correctAnswer });
-        } catch (e) {
-            console.warn('Failed to parse a question chunk', e);
-            continue;
-        }
-    }
-    return parsedQuestions;
-}
-
-function loadCached() {
-    const cached = localStorage.getItem('gcp_questions_db');
-    const source = localStorage.getItem('gcp_db_source') || 'kahoot.pdf';
-    if (cached) {
-        const questions = JSON.parse(cached);
-        document.getElementById('cached-count').textContent = questions.length;
-        document.getElementById('cached-source').textContent = source;
-        return questions;
-    }
-    document.getElementById('cached-count').textContent = 0;
-    document.getElementById('cached-source').textContent = 'none';
-    return null;
-}
-
-function encodeImagePath(url) {
-    return url.split('/').map(part => encodeURIComponent(part)).join('/');
-}
-
-function encodeImagePath(url) {
-    return url.split('/').map(part => encodeURIComponent(part)).join('/');
-}
-
-async function adminImageUrlExists(url) {
-    return new Promise(resolve => {
-        const img = new Image();
-        img.onload = () => resolve(true);
-        img.onerror = () => resolve(false);
-        img.src = url;
-    });
-}
-
-async function resolveAdminReferenceImageUrl(questionId) {
-    const numericId = Number(questionId);
-    const extensions = ['png', 'jpg', 'jpeg', 'webp'];
-    const candidates = [];
-
-    if (numericId === 98) {
-        candidates.push('Images/98 Reesponse D');
-    }
-    candidates.push(`Images/Question #${numericId}`);
-    candidates.push(`Images/Question ${numericId}`);
-    candidates.push(`Images/Question${numericId}`);
-    candidates.push(`Images/Question-${numericId}`);
-    candidates.push(`Images/Question_${numericId}`);
-    candidates.push(`Images/${numericId}`);
-
-    for (const base of candidates) {
-        for (const ext of extensions) {
-            const url = `${base}.${ext}`;
-            const encodedUrl = encodeImagePath(url);
-            if (await adminImageUrlExists(encodedUrl)) {
-                return encodedUrl;
-            }
-        }
-    }
-
-    return null;
-}
-
-document.getElementById('parse-pdf-btn').addEventListener('click', async () => {
-    const input = document.getElementById('admin-pdf-input');
-    const status = document.getElementById('parse-status');
-    if (!input.files || !input.files[0]) { status.textContent = 'Please select a PDF file first.'; return; }
-    const file = input.files[0];
-    status.textContent = 'Parsing PDF...';
-    try {
-        const buf = await file.arrayBuffer();
-        const questions = await parsePdfContent(buf, (page, total, text) => {
-            status.textContent = `Parsing page ${page}/${total}...`;
-        });
-        if (!questions || questions.length === 0) { status.textContent = 'No questions parsed.'; return; }
-        localStorage.setItem('gcp_questions_db', JSON.stringify(questions));
-        localStorage.setItem('gcp_db_source', file.name);
-        status.textContent = `Parsed ${questions.length} questions and saved to localStorage.`;
-        loadCached();
-    } catch (e) {
-        console.error(e);
-        status.textContent = 'Error parsing PDF.';
-    }
-});
-
-document.getElementById('clear-cache-btn').addEventListener('click', () => {
-    localStorage.removeItem('gcp_questions_db');
-    localStorage.removeItem('gcp_db_source');
-    loadCached();
-    document.getElementById('runner-status').textContent = 'Cache cleared.';
-});
-
-function renderQuestionToRunner(q) {
-    const imageBtn = document.getElementById('admin-image-reference-btn');
-    if (imageBtn) {
-        imageBtn.style.display = 'none';
-        imageBtn.disabled = true;
-        imageBtn.onclick = null;
-    }
-
-    document.getElementById('question-area').style.display = 'block';
-    document.getElementById('q-title').textContent = `Q#${q.id}`;
-    document.getElementById('q-body').innerHTML = q.question;
-    // Show multi-select hint when question asks to choose multiple
-    const hintEl = document.getElementById('multi-hint');
-    hintEl.style.display = 'none';
-  try {
-    const txt = (q.question || '').toLowerCase();
-    const chooseMatch = txt.match(/choose\s+(one|two|three|four|five|\d+)/);
-    let required = null;
-    if (chooseMatch) {
-      const map = { one:1, two:2, three:3, four:4, five:5 };
-      const val = chooseMatch[1];
-      required = map[val] || parseInt(val) || null;
-    } else if (/select all that apply/.test(txt) || /choose all that apply/.test(txt)) {
-      required = Object.keys(q.options).length;
-    }
-    if (required && required > 1) {
-      hintEl.textContent = `Select ${required} option${required>1? 's':''}`;
-      hintEl.style.display = 'block';
-    }
-  } catch (e) { /* ignore */ }
-    const list = document.getElementById('option-list');
-    list.innerHTML = '';
-    Object.keys(q.options).sort().forEach(letter => {
+      const list = document.getElementById('option-list');
+      list.innerHTML = '';
+      letters.forEach(letter => {
         const btn = document.createElement('button');
         btn.className = 'answer-card';
         btn.style.width = '100%';
         btn.dataset.option = letter;
-        btn.innerHTML = `<strong>${letter}.</strong> ${q.options[letter]}`;
-        btn.addEventListener('click', () => {
-            // toggle selection
-            if (btn.classList.contains('multi-selected')) btn.classList.remove('multi-selected'); else btn.classList.add('multi-selected');
-        });
+        const label = document.createElement('strong');
+        label.textContent = `${letter}.`;
+        btn.append(label, ` ${q.options[letter]}`);
+        btn.addEventListener('click', () => btn.classList.toggle('multi-selected'));
         list.appendChild(btn);
-    });
+      });
 
-    const adminImageBtn = document.getElementById('admin-image-reference-btn');
-    if (adminImageBtn) {
-        resolveAdminReferenceImageUrl(q.id).then(url => {
-            if (!url) return;
-            adminImageBtn.style.display = 'inline-flex';
-            adminImageBtn.disabled = false;
-            adminImageBtn.onclick = () => {
-                const overlay = document.getElementById('admin-image-popup-overlay');
-                const preview = document.getElementById('admin-question-image-preview');
-                const title = document.getElementById('admin-image-popup-question-id');
-                if (!overlay || !preview || !title) return;
-                preview.src = url;
-                preview.alt = `Reference image for question ${q.id}`;
-                title.textContent = `Q#${q.id}`;
-                overlay.style.display = 'flex';
-                requestAnimationFrame(() => overlay.classList.add('active'));
-            };
+      resolveReferenceImageUrl(q.id).then(url => {
+        if (!url || currentQuestion !== q) return;
+        imageBtn.style.display = 'inline-flex';
+        imageBtn.disabled = false;
+        imageBtn.onclick = () => openImagePopup(url, q.id);
+      });
+    }
+
+    function checkAnswer() {
+      const resultEl = document.getElementById('check-result');
+      const buttons = Array.from(document.querySelectorAll('#option-list .answer-card'));
+      buttons.forEach(btn => btn.classList.remove('correct', 'incorrect'));
+
+      const selected = buttons.filter(b => b.classList.contains('multi-selected')).map(b => b.dataset.option).sort();
+      if (!selected.length) {
+        resultEl.textContent = 'No option selected.';
+        return;
+      }
+      if (!currentQuestion) {
+        resultEl.textContent = 'Load a question first.';
+        return;
+      }
+
+      const correctLetters = String(currentQuestion.answer || '').toUpperCase().match(/[A-Z]/g) || [];
+      buttons.forEach(btn => {
+        const letter = btn.dataset.option;
+        const isSelected = btn.classList.contains('multi-selected');
+        const isCorrectLetter = correctLetters.includes(letter);
+        if (isSelected && isCorrectLetter) btn.classList.add('correct');
+        else if (isSelected) btn.classList.add('incorrect');
+        else if (isCorrectLetter) btn.classList.add('correct');
+      });
+
+      const isCorrect = selected.length === correctLetters.length && correctLetters.every(c => selected.includes(c));
+      resultEl.textContent = isCorrect
+        ? `Correct! Answer: ${currentQuestion.answer}`
+        : `Incorrect. Correct: ${currentQuestion.answer}`;
+    }
+
+    function openImagePopup(url, id) {
+      const overlay = document.getElementById('admin-image-popup-overlay');
+      const preview = document.getElementById('admin-question-image-preview');
+      preview.src = url;
+      preview.alt = `Reference image for question ${id}`;
+      document.getElementById('admin-image-popup-question-id').textContent = `Q#${id}`;
+      overlay.style.display = 'flex';
+      requestAnimationFrame(() => overlay.classList.add('active'));
+    }
+
+    function closeImagePopup() {
+      const overlay = document.getElementById('admin-image-popup-overlay');
+      overlay.classList.remove('active');
+      setTimeout(() => {
+        overlay.style.display = 'none';
+        document.getElementById('admin-question-image-preview').src = 'about:blank';
+      }, 220);
+    }
+
+    document.getElementById('parse-pdf-btn').addEventListener('click', async () => {
+      const input = document.getElementById('admin-pdf-input');
+      const status = document.getElementById('parse-status');
+      if (!input.files || !input.files[0]) {
+        status.textContent = 'Please select a PDF file first.';
+        return;
+      }
+      const file = input.files[0];
+      status.textContent = 'Parsing PDF...';
+      try {
+        const buffer = await file.arrayBuffer();
+        const parsed = await parsePdfContent(buffer, (page, total) => {
+          status.textContent = `Parsing page ${page}/${total}...`;
         });
-    }
-
-    document.getElementById('check-result').textContent = '';
-}
-
-document.getElementById('run-q-btn').addEventListener('click', () => {
-    const all = loadCached();
-    if (!all) { document.getElementById('runner-status').textContent = 'No cached DB. Upload and parse a PDF first.'; return; }
-    const idx = parseInt(document.getElementById('q-number').value, 10);
-    if (!idx || idx < 1 || idx > all.length) { document.getElementById('runner-status').textContent = 'Invalid question number.'; return; }
-    const q = all.find(x => x.id === idx) || all[idx-1];
-    if (!q) { document.getElementById('runner-status').textContent = 'Question not found.'; return; }
-    document.getElementById('runner-status').textContent = `Loaded question ${q.id}`;
-    renderQuestionToRunner(q);
-});
-
-document.getElementById('check-answer-btn').addEventListener('click', () => {
-    const list = Array.from(document.querySelectorAll('#option-list .answer-card'));
-    const selected = list.filter(b => b.classList.contains('multi-selected')).map(b => b.dataset.option).sort();
-    const resultEl = document.getElementById('check-result');
-    resultEl.textContent = '';
-
-    list.forEach(btn => {
-      btn.classList.remove('correct', 'incorrect');
-    });
-
-    if (!selected.length) {
-      resultEl.textContent = 'No option selected.';
-      return;
-    }
-    const qid = parseInt(document.getElementById('q-number').value,10);
-    const all = loadCached();
-    const q = all.find(x => x.id === qid) || all[qid-1];
-    const correctLetters = String(q.answer || '').toUpperCase().match(/[A-Z]/g) || [];
-
-    list.forEach(btn => {
-      const letter = btn.dataset.option;
-      const selectedThis = btn.classList.contains('multi-selected');
-      const isCorrectLetter = correctLetters.includes(letter);
-      if (selectedThis && isCorrectLetter) {
-        btn.classList.add('correct');
-      } else if (selectedThis && !isCorrectLetter) {
-        btn.classList.add('incorrect');
-      } else if (!selectedThis && isCorrectLetter) {
-        btn.classList.add('correct');
+        const questions = sanitizeQuestions(parsed);
+        if (questions.length === 0) {
+          status.textContent = 'No questions parsed.';
+          return;
+        }
+        localStorage.setItem('gcp_questions_db', JSON.stringify(questions));
+        localStorage.setItem('gcp_db_source', file.name);
+        status.textContent = `Parsed ${questions.length} questions and saved to localStorage.`;
+        loadCached();
+      } catch (e) {
+        console.error(e);
+        status.textContent = 'Error parsing PDF.';
       }
     });
 
-    const isCorrect = selected.length === correctLetters.length && correctLetters.every(c => selected.includes(c));
-    resultEl.textContent = isCorrect ? `Correct! Answer: ${q.answer}` : `Incorrect. Correct: ${q.answer}`;
-});
-
-document.getElementById('reset-selection-btn').addEventListener('click', () => {
-    document.querySelectorAll('#option-list .answer-card').forEach(b => b.classList.remove('multi-selected', 'correct', 'incorrect'));
-    document.getElementById('check-result').textContent = '';
-});
-
-const adminImagePopupOverlay = document.getElementById('admin-image-popup-overlay');
-if (adminImagePopupOverlay) {
-    adminImagePopupOverlay.addEventListener('click', (event) => {
-        if (event.target === adminImagePopupOverlay) {
-            adminImagePopupOverlay.classList.remove('active');
-            setTimeout(() => {
-                adminImagePopupOverlay.style.display = 'none';
-                const preview = document.getElementById('admin-question-image-preview');
-                if (preview) preview.src = '';
-            }, 220);
-        }
+    document.getElementById('clear-cache-btn').addEventListener('click', () => {
+      localStorage.removeItem('gcp_questions_db');
+      localStorage.removeItem('gcp_db_source');
+      currentQuestion = null;
+      loadCached();
+      document.getElementById('runner-status').textContent = 'Cache cleared.';
     });
-}
 
-const adminCloseImageBtn = document.getElementById('admin-close-image-popup');
-if (adminCloseImageBtn) {
-    adminCloseImageBtn.addEventListener('click', () => {
-        if (!adminImagePopupOverlay) return;
-        adminImagePopupOverlay.classList.remove('active');
-        setTimeout(() => {
-            adminImagePopupOverlay.style.display = 'none';
-            const preview = document.getElementById('admin-question-image-preview');
-            if (preview) preview.src = '';
-        }, 220);
+    document.getElementById('run-q-btn').addEventListener('click', () => {
+      const runnerStatus = document.getElementById('runner-status');
+      const all = loadCached();
+      if (!all) {
+        runnerStatus.textContent = 'No cached DB. Upload and parse a PDF first.';
+        return;
+      }
+      const idx = parseInt(document.getElementById('q-number').value, 10);
+      if (!idx || idx < 1 || idx > all.length) {
+        runnerStatus.textContent = 'Invalid question number.';
+        return;
+      }
+      const q = all.find(x => x.id === idx) || all[idx - 1];
+      if (!q) {
+        runnerStatus.textContent = 'Question not found.';
+        return;
+      }
+      runnerStatus.textContent = `Loaded question ${q.id}`;
+      renderQuestion(q);
     });
-}
 
-// init
-(function(){
-  const adminPanel = document.getElementById('admin-panel');
-  adminPanel.style.display = 'block';
-  loadCached();
+    document.getElementById('check-answer-btn').addEventListener('click', checkAnswer);
 
-  const changePwBtn = document.getElementById('change-pw-btn');
-  if (changePwBtn) {
-    changePwBtn.addEventListener('click', () => {
+    document.getElementById('reset-selection-btn').addEventListener('click', () => {
+      document.querySelectorAll('#option-list .answer-card').forEach(b => b.classList.remove('multi-selected', 'correct', 'incorrect'));
+      document.getElementById('check-result').textContent = '';
+    });
+
+    const overlay = document.getElementById('admin-image-popup-overlay');
+    overlay.addEventListener('click', event => {
+      if (event.target === overlay) closeImagePopup();
+    });
+    document.getElementById('admin-close-image-popup').addEventListener('click', closeImagePopup);
+
+    // Change password: this value is only stored in localStorage. Nothing checks it, and this page
+    // has no login, so it does NOT protect anything.
+    document.getElementById('change-pw-btn').addEventListener('click', () => {
       const newPw = prompt('Enter new admin password (leave blank to cancel):');
       if (!newPw) return;
       const confirmPw = prompt('Confirm new admin password:');
-      if (newPw !== confirmPw) { alert('Passwords do not match.'); return; }
+      if (newPw !== confirmPw) {
+        alert('Passwords do not match.');
+        return;
+      }
       localStorage.setItem('admin_password', newPw);
       alert('Admin password updated.');
     });
-  }
-})();
-(function() {
-  const savedTheme = localStorage.getItem('gcp_theme') || 'default';
-  document.body.classList.remove('dark-theme');
-  document.body.classList.add(`theme-${savedTheme}`);
-})();
-</script>
+
+    // Init
+    loadCached();
+    document.body.classList.remove('theme-default');
+    document.body.classList.add(`theme-${localStorage.getItem('gcp_theme') || 'default'}`);
+  </script>
 </body>
 </html>

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>GCP ACE Quiz Quest</title>
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -11,7 +11,7 @@
     <!-- FontAwesome Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- Mozilla PDF.js -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <!-- Custom CSS -->
     <link rel="stylesheet" href="styles.css">
 </head>
@@ -60,7 +60,6 @@
                         </div>
                         <h3>Loading question database…</h3>
                         <p class="auto-load-sub">Parsing GCP ACE exam questions automatically.</p>
-                        <!-- Hidden fallback file input -->
                     </div>
 
                     <!-- Database Ready Section -->
@@ -355,22 +354,6 @@
                 </div>
             </section>
 
-            <!-- 4. Leaderboard Between Questions -->
-            <section id="leaderboard-screen" class="screen">
-                <div class="glass-card leaderboard-card">
-                    <h2>Standings</h2>
-                    <p class="leaderboard-subtitle">How are you matching up against the competition?</p>
-
-                    <div class="leaderboard-list" id="leaderboard-list">
-                        <!-- Simulated player ranks -->
-                    </div>
-
-                    <button id="leaderboard-next-btn" class="btn btn-primary btn-large">
-                        Continue <i class="fa-solid fa-forward"></i>
-                    </button>
-                </div>
-            </section>
-
             <!-- 5. Game Over Screen -->
             <section id="game-over-screen" class="screen">
                 <div class="glass-card game-summary-card">
@@ -418,6 +401,10 @@
     <!-- PDF export library -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <!-- Custom Game Logic & Parser Script -->
+    <!-- Shared helpers (text cleanup, PDF parser, reference images) must load before app.js -->
+    <script src="text-utils.js"></script>
+    <script src="pdf-parser.js"></script>
+    <script src="image-utils.js"></script>
     <script src="app.js"></script>
 </body>
 </html>
